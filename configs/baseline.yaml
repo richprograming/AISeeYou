@@ -1,0 +1,13 @@
+root: data/VIGOR
+label_dir: splits
+cities: [Chicago]
+split_file: same_area_balanced_test.txt
+max_queries: 500
+full_gallery: false
+seed: 0
+
+backbone: vit_small_patch14_dinov2.lvd142m
+pano_size: [224, 448]  # h, w (multiples of 14 for DINOv2)
+sat_size: [224, 224]
+batch_size: 32
+num_workers: 2
