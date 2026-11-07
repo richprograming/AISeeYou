@@ -1,0 +1,14 @@
+# Square areas centered on (lat, lon). Candidates; final splits depend on Mapillary coverage.
+size_m: 2000
+m_per_px: 0.5
+
+cities:
+  san_francisco:  {lat: 37.7880, lon: -122.4075}
+  seattle:        {lat: 47.6080, lon: -122.3350}
+  amsterdam:      {lat: 52.3700, lon: 4.8950}
+  berlin:         {lat: 52.5200, lon: 13.4050}
+  sao_paulo:      {lat: -23.5610, lon: -46.6560}
+  rio_de_janeiro: {lat: -22.9700, lon: -43.1850}
+  curitiba:       {lat: -25.4290, lon: -49.2710}
+  porto_alegre:   {lat: -30.0277, lon: -51.2287}
+  belo_horizonte: {lat: -19.9190, lon: -43.9386}
