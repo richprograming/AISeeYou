@@ -1,3 +1,5 @@
+import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -5,69 +7,63 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-
-def pano_latlon(path):
-    # "<panoid>,<lat>,<lon>,.jpg"
-    parts = Path(path).name.split(",")
-    return float(parts[-3]), float(parts[-2])
-
-
-def sat_latlon(path):
-    # "satellite_<lat>_<lon>.png"
-    _, lat, lon = Path(path).stem.split("_")
-    return float(lat), float(lon)
+from src.geo import to_xy
 
 
 @dataclass
-class Vigor:
-    panos: list    # query image paths
-    sats: list     # gallery image paths
-    labels: np.ndarray  # (num_panos, 4) gallery indices: positive, then 3 semi-positives
-
-    def pano_coords(self):
-        return np.array([pano_latlon(p) for p in self.panos])
-
-    def sat_coords(self):
-        return np.array([sat_latlon(s) for s in self.sats])
+class City:
+    name: str
+    photos: list         # photo paths
+    xy: np.ndarray       # (N, 2) photo positions in meters, origin at the map center
+    is_pano: np.ndarray  # (N,) bool
+    raster: np.ndarray   # (H, W, 3) rendered OSM map
+    size_m: float
+    m_per_px: float
 
 
-def load_vigor(root, cities, split_file, label_dir="splits"):
-    root = Path(root)
-    panos, sats, labels = [], [], []
-    for city in cities:
-        names = (root / label_dir / city / "satellite_list.txt").read_text().split()
-        index = {name: len(sats) + i for i, name in enumerate(names)}
-        sats += [root / city / "satellite" / n for n in names]
-
-        # line: pano sat_pos dx dy sat_semi1 dx dy sat_semi2 dx dy sat_semi3 dx dy
-        for line in (root / label_dir / city / split_file).read_text().splitlines():
-            tokens = line.split()
-            if not tokens:
-                continue
-            panos.append(root / city / "panorama" / tokens[0])
-            labels.append([index[tokens[i]] for i in (1, 4, 7, 10)])
-    return Vigor(panos, sats, np.array(labels, dtype=np.int64))
-
-
-def subset(data, num_queries, seed=0, full_gallery=False):
-    """Keep num_queries random panoramas. Unless full_gallery, the gallery is
-    reduced to the satellites those panoramas reference (much easier task)."""
-    rng = np.random.default_rng(seed)
-    keep = rng.choice(len(data.panos), size=min(num_queries, len(data.panos)), replace=False)
-    keep.sort()
-    panos = [data.panos[i] for i in keep]
-    labels = data.labels[keep]
-    if full_gallery:
-        return Vigor(panos, data.sats, labels)
-
-    used = np.unique(labels)
-    remap = {old: new for new, old in enumerate(used)}
-    sats = [data.sats[i] for i in used]
-    labels = np.vectorize(remap.get)(labels)
-    return Vigor(panos, sats, labels)
+def load_city(root, name):
+    d = Path(root) / name
+    meta = json.loads((d / "map.json").read_text())
+    raster = np.asarray(Image.open(d / "map.png").convert("RGB"))
+    with open(d / "photos.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    lat = [float(r["lat"]) for r in rows]
+    lon = [float(r["lon"]) for r in rows]
+    return City(
+        name=name,
+        photos=[d / "photos" / f"{r['id']}.jpg" for r in rows],
+        xy=to_xy(lat, lon, meta["lat"], meta["lon"]).reshape(-1, 2),
+        is_pano=np.array([r["is_pano"] == "True" for r in rows], dtype=bool),
+        raster=raster,
+        size_m=meta["size_m"],
+        m_per_px=meta["m_per_px"],
+    )
 
 
-class ImageList(Dataset):
+def select(city, idx):
+    idx = np.asarray(idx)
+    return City(city.name, [city.photos[i] for i in idx], city.xy[idx], city.is_pano[idx],
+                city.raster, city.size_m, city.m_per_px)
+
+
+def grid(size_m, tile_m, stride_m):
+    """Centers of gallery tiles covering the map, keeping every tile fully inside it."""
+    half = size_m / 2 - tile_m / 2
+    ticks = np.arange(-half, half + 1e-6, stride_m)
+    xs, ys = np.meshgrid(ticks, ticks)
+    return np.stack([xs.ravel(), ys.ravel()], axis=1)
+
+
+def crop(raster, x, y, tile_m, m_per_px, size_m):
+    """Square map tile of side tile_m centered at (x, y) meters, north up."""
+    half = tile_m / 2 / m_per_px
+    col = (x + size_m / 2) / m_per_px
+    row = (size_m / 2 - y) / m_per_px
+    box = tuple(round(v) for v in (col - half, row - half, col + half, row + half))
+    return Image.fromarray(raster).crop(box)
+
+
+class Photos(Dataset):
     def __init__(self, paths, transform):
         self.paths = paths
         self.transform = transform
@@ -76,5 +72,20 @@ class ImageList(Dataset):
         return len(self.paths)
 
     def __getitem__(self, i):
-        img = Image.open(self.paths[i]).convert("RGB")
-        return self.transform(img)
+        return self.transform(Image.open(self.paths[i]).convert("RGB"))
+
+
+class Tiles(Dataset):
+    def __init__(self, city, centers, tile_m, transform):
+        self.city = city
+        self.centers = centers
+        self.tile_m = tile_m
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.centers)
+
+    def __getitem__(self, i):
+        x, y = self.centers[i]
+        c = self.city
+        return self.transform(crop(c.raster, x, y, self.tile_m, c.m_per_px, c.size_m))

@@ -1,41 +1,31 @@
 import numpy as np
 import torch
 
-EARTH_RADIUS_M = 6_371_000
-
-
-def haversine(lat1, lon1, lat2, lon2):
-    lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
-    a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
-    return 2 * EARTH_RADIUS_M * np.arcsin(np.sqrt(a))
-
 
 @torch.no_grad()
-def rank_queries(query, gallery, positive, chunk=1024):
-    """Rank of the positive for each query (0 = top-1) and the top-1 gallery index.
-    Embeddings must be L2-normalized. Chunked so the full similarity matrix never
-    has to fit in memory."""
-    ranks, top1 = [], []
+def topk(query, gallery, k=10, chunk=1024):
+    """Indices of the k most similar gallery items per query. Embeddings must be L2-normalized."""
+    out = []
     for start in range(0, len(query), chunk):
         sim = query[start:start + chunk] @ gallery.T
-        pos = torch.as_tensor(positive[start:start + chunk])
-        pos_score = sim[torch.arange(len(sim)), pos]
-        ranks.append((sim > pos_score[:, None]).sum(1))
-        top1.append(sim.argmax(1))
-    return torch.cat(ranks).numpy(), torch.cat(top1).numpy()
+        out.append(sim.topk(min(k, len(gallery)), dim=1).indices)
+    return torch.cat(out).numpy()
 
 
-def retrieval_metrics(ranks, top1, labels, query_coords, gallery_coords, ks=(1, 5, 10)):
-    out = {f"R@{k}": 100 * np.mean(ranks < k) for k in ks}
-    one_percent = max(1, round(0.01 * len(gallery_coords)))
-    out["R@1%"] = 100 * np.mean(ranks < one_percent)
-    # VIGOR hit rate: top-1 is the positive or one of the semi-positives
-    out["hit"] = 100 * np.mean((labels == top1[:, None]).any(1))
+def retrieval_metrics(top, query_xy, gallery_xy, radius_m=50, ks=(1, 5, 10)):
+    """A retrieved tile is correct if its center is within radius_m of the photo."""
+    dist = np.linalg.norm(gallery_xy[top] - query_xy[:, None], axis=-1)  # (Q, k)
+    out = {f"R@{k}": 100 * np.mean(dist[:, :k].min(1) <= radius_m) for k in ks}
+    out["median_m"] = np.median(dist[:, 0])
 
-    q, g = query_coords, gallery_coords
-    err = haversine(q[:, 0], q[:, 1], g[top1, 0], g[top1, 1])
-    out["median_m"] = float(np.median(err))
-    # lower bound: even a perfect top-1 is off by the pano-to-tile-center offset
-    oracle = haversine(q[:, 0], q[:, 1], g[labels[:, 0], 0], g[labels[:, 0], 1])
-    out["median_m_oracle"] = float(np.median(oracle))
+    # reference points: random ranking, and the closest tile the gallery has
+    chance, random, oracle = [], [], []
+    for q in np.array_split(query_xy, max(1, len(query_xy) // 256)):
+        d = np.linalg.norm(gallery_xy[None] - q[:, None], axis=-1)  # (chunk, G)
+        chance.append(np.mean(d <= radius_m, axis=1))
+        random.append(np.median(d, axis=1))
+        oracle.append(d.min(1))
+    out["chance_R@1"] = 100 * np.mean(np.concatenate(chance))
+    out["median_m_random"] = np.median(np.concatenate(random))
+    out["median_m_oracle"] = np.median(np.concatenate(oracle))
     return {k: round(float(v), 2) for k, v in out.items()}
