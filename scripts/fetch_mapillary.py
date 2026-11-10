@@ -147,6 +147,7 @@ def main():
     parser.add_argument("--out", default="data/cities")
     parser.add_argument("--max-photos", type=int, default=3000)
     parser.add_argument("--count-only", action="store_true")
+    parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
 
     token = read_token()
@@ -164,7 +165,7 @@ def main():
 
         kept = add_details(token, kept)
         city_dir = Path(args.out) / city
-        kept = download(kept, city_dir / "photos")
+        kept = download(kept, city_dir / "photos", args.workers)
         with open(city_dir / "photos.csv", "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["id", "lat", "lon", "compass", "is_pano", "captured_at", "sequence", "quality"])
