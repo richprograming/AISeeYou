@@ -6,6 +6,7 @@ Writes data/cities/<city>/osm.json (raw), map.png and map.json (georeference).
 """
 import argparse
 import json
+import time
 from pathlib import Path
 
 import requests
@@ -41,8 +42,13 @@ def fetch(city, lat, lon, size_m, out):
         return json.loads(path.read_text())["elements"]
     s, w, n, e = bbox(lat, lon, size_m / 2)
     query = QUERY.replace("{b}", f"{s},{w},{n},{e}")
-    resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=360,
-                         headers={"User-Agent": "aiseeyou-research/0.1"})
+    for attempt in range(5):
+        resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=360,
+                             headers={"User-Agent": "aiseeyou-research/0.1"})
+        if resp.status_code not in (429, 502, 503, 504):
+            break
+        print(f"{city}: Overpass busy (HTTP {resp.status_code}), retrying")
+        time.sleep(30 * (attempt + 1))
     resp.raise_for_status()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(resp.content)

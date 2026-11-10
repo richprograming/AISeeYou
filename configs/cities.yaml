@@ -1,4 +1,4 @@
-# Square areas centered on (lat, lon). Candidates; final splits depend on Mapillary coverage.
+# Square areas centered on (lat, lon).
 size_m: 2000
 m_per_px: 0.5
 
@@ -12,3 +12,11 @@ cities:
   curitiba:       {lat: -25.4290, lon: -49.2710}
   porto_alegre:   {lat: -30.0277, lon: -51.2287}
   belo_horizonte: {lat: -19.9190, lon: -43.9386}
+
+# Train on US/Europe, test on Brazilian cities never seen in training.
+# sao_paulo is held out for the ablation "does one Brazilian training city help?".
+splits:
+  train: [san_francisco, seattle, amsterdam, berlin]
+  val: [belo_horizonte]
+  test: [porto_alegre, rio_de_janeiro, curitiba]
+  extra: [sao_paulo]

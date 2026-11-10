@@ -13,6 +13,7 @@ import argparse
 import csv
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mapbox_vector_tile
@@ -113,14 +114,30 @@ def add_details(token, images, batch=50):
     return out
 
 
-def download(images, out_dir):
+def download_one(im, out_dir):
+    path = out_dir / f"{im['id']}.jpg"
+    if path.exists():
+        return True
+    try:
+        resp = requests.get(im["url"], timeout=60)
+    except requests.RequestException:
+        return False
+    if resp.ok:
+        path.write_bytes(resp.content)
+    return resp.ok
+
+
+def download(images, out_dir, workers=4):
+    """Returns the images that were saved; failed downloads are dropped."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    for i, im in enumerate(images):
-        path = out_dir / f"{im['id']}.jpg"
-        if not path.exists():
-            path.write_bytes(get(im["url"]).content)
-        if (i + 1) % 200 == 0:
-            print(f"  {i + 1}/{len(images)}", flush=True)
+    saved = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for i, (im, ok) in enumerate(zip(images, pool.map(lambda im: download_one(im, out_dir), images))):
+            if ok:
+                saved.append(im)
+            if (i + 1) % 500 == 0:
+                print(f"  {i + 1}/{len(images)}", flush=True)
+    return saved
 
 
 def main():
@@ -147,7 +164,7 @@ def main():
 
         kept = add_details(token, kept)
         city_dir = Path(args.out) / city
-        download(kept, city_dir / "photos")
+        kept = download(kept, city_dir / "photos")
         with open(city_dir / "photos.csv", "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["id", "lat", "lon", "compass", "is_pano", "captured_at", "sequence", "quality"])
