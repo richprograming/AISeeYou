@@ -1,42 +1,81 @@
 """Download street-level photos from Mapillary inside each city area.
 
-Needs a free client token: set MAPILLARY_TOKEN in the environment.
+Needs a free client token: MAPILLARY_TOKEN in the environment or in .env.
 
 python -m scripts.fetch_mapillary sao_paulo --count-only     # coverage check, no images
 python -m scripts.fetch_mapillary sao_paulo --max-photos 3000
 
+Coverage comes from Mapillary's vector tiles (the bbox search endpoint times out in dense
+areas). Only the photos kept after thinning get a metadata lookup and a download.
 Writes data/cities/<city>/photos.csv and photos/<id>.jpg (1024 px wide thumbnails).
 """
 import argparse
 import csv
+import math
 import os
 from pathlib import Path
 
+import mapbox_vector_tile
 import numpy as np
 import requests
 import yaml
 
 from src.geo import bbox, to_xy
 
-API_URL = "https://graph.mapillary.com/images"
-FIELDS = "id,computed_geometry,geometry,compass_angle,captured_at,is_pano,sequence,thumb_1024_url"
-CELL_DEG = 0.005    # query in small cells; the API caps results per request
+TILE_URL = "https://tiles.mapillary.com/maps/vtp/mly1_public/2/{z}/{x}/{y}"
+GRAPH_URL = "https://graph.mapillary.com/"
+ZOOM = 14           # the zoom level where the image layer is available
 MARGIN_M = 50       # keep photos away from the map border so tiles around them exist
 THIN_M = 10         # at most one photo per 10 m cell, to avoid near duplicates
 
 
+def read_token(env_file=".env"):
+    if os.environ.get("MAPILLARY_TOKEN"):
+        return os.environ["MAPILLARY_TOKEN"]
+    if Path(env_file).exists():
+        for line in Path(env_file).read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "MAPILLARY_TOKEN":
+                return value.strip()
+    raise SystemExit("set MAPILLARY_TOKEN in the environment or in .env")
+
+
+def get(url, **kwargs):
+    # never let an exception print the url: the tile endpoint needs the token in it
+    resp = requests.get(url, timeout=60, **kwargs)
+    if not resp.ok:
+        raise SystemExit(f"HTTP {resp.status_code} from {url.split('?')[0]}: {resp.text[:200]}")
+    return resp
+
+
+def tile_xy(lat, lon, z=ZOOM):
+    n = 2 ** z
+    x = (lon + 180) / 360 * n
+    y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n
+    return x, y
+
+
+def tile_lonlat(x, y, z=ZOOM):
+    n = 2 ** z
+    lon = x / n * 360 - 180
+    lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+    return lat, lon
+
+
 def list_images(token, s, w, n, e):
+    x0, y0 = tile_xy(n, w)
+    x1, y1 = tile_xy(s, e)
     images = []
-    for lat in np.arange(s, n, CELL_DEG):
-        for lon in np.arange(w, e, CELL_DEG):
-            cell = f"{lon},{lat},{min(lon + CELL_DEG, e)},{min(lat + CELL_DEG, n)}"
-            params = {"access_token": token, "fields": FIELDS, "bbox": cell, "limit": 2000}
-            resp = requests.get(API_URL, params=params, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()["data"]
-            if len(data) == params["limit"]:
-                print(f"  cell {cell} hit the result cap, coverage there is partial")
-            images += data
+    for tx in range(int(x0), int(x1) + 1):
+        for ty in range(int(y0), int(y1) + 1):
+            resp = get(TILE_URL.format(z=ZOOM, x=tx, y=ty), params={"access_token": token})
+            layer = mapbox_vector_tile.decode(resp.content, default_options={"y_coord_down": True})
+            layer = layer.get("image", {"features": [], "extent": 4096})
+            for f in layer["features"]:
+                px, py = f["geometry"]["coordinates"]
+                lat, lon = tile_lonlat(tx + px / layer["extent"], ty + py / layer["extent"])
+                if s <= lat <= n and w <= lon <= e:
+                    images.append({**f["properties"], "lat": lat, "lon": lon})
     return images
 
 
@@ -45,17 +84,33 @@ def thin(images, lat0, lon0, max_photos, seed=0):
     images = sorted(images, key=lambda im: im.get("captured_at", 0), reverse=True)
     kept, seen = [], set()
     for im in images:
-        lon, lat = (im.get("computed_geometry") or im["geometry"])["coordinates"]
-        x, y = to_xy(lat, lon, lat0, lon0)
+        x, y = to_xy(im["lat"], im["lon"], lat0, lon0)
         cell = (int(x // THIN_M), int(y // THIN_M))
-        if cell in seen or "thumb_1024_url" not in im:
-            continue
-        seen.add(cell)
-        kept.append({**im, "lat": lat, "lon": lon})
+        if cell not in seen:
+            seen.add(cell)
+            kept.append(im)
     if max_photos and len(kept) > max_photos:
         rng = np.random.default_rng(seed)
         kept = [kept[i] for i in sorted(rng.choice(len(kept), max_photos, replace=False))]
     return kept
+
+
+def add_details(token, images, batch=50):
+    """Thumbnail url and the refined (structure-from-motion) position, when Mapillary has one."""
+    session_headers = {"Authorization": f"OAuth {token}"}
+    out = []
+    for i in range(0, len(images), batch):
+        chunk = images[i:i + batch]
+        params = {"ids": ",".join(str(im["id"]) for im in chunk), "fields": "id,computed_geometry,thumb_1024_url"}
+        details = get(GRAPH_URL, params=params, headers=session_headers).json()
+        for im in chunk:
+            d = details.get(str(im["id"]), {})
+            if "thumb_1024_url" not in d:
+                continue
+            if "computed_geometry" in d:
+                im["lon"], im["lat"] = d["computed_geometry"]["coordinates"]
+            out.append({**im, "url": d["thumb_1024_url"]})
+    return out
 
 
 def download(images, out_dir):
@@ -63,11 +118,9 @@ def download(images, out_dir):
     for i, im in enumerate(images):
         path = out_dir / f"{im['id']}.jpg"
         if not path.exists():
-            resp = requests.get(im["thumb_1024_url"], timeout=60)
-            resp.raise_for_status()
-            path.write_bytes(resp.content)
+            path.write_bytes(get(im["url"]).content)
         if (i + 1) % 200 == 0:
-            print(f"  {i + 1}/{len(images)}")
+            print(f"  {i + 1}/{len(images)}", flush=True)
 
 
 def main():
@@ -79,29 +132,29 @@ def main():
     parser.add_argument("--count-only", action="store_true")
     args = parser.parse_args()
 
-    token = os.environ.get("MAPILLARY_TOKEN")
-    if not token:
-        raise SystemExit("set MAPILLARY_TOKEN first")
+    token = read_token()
     cfg = yaml.safe_load(open(args.config))
 
     for city in args.cities:
         c = cfg["cities"][city]
         images = list_images(token, *bbox(c["lat"], c["lon"], cfg["size_m"] / 2 - MARGIN_M))
-        kept = thin(images, c["lat"], c["lon"], args.max_photos)
+        kept = thin(images, c["lat"], c["lon"], None if args.count_only else args.max_photos)
         panos = sum(bool(im.get("is_pano")) for im in kept)
         print(f"{city}: {len(images)} images, {len(kept)} after thinning "
-              f"({panos} panoramas, {len(kept) - panos} perspective)")
+              f"({panos} panoramas, {len(kept) - panos} perspective)", flush=True)
         if args.count_only:
             continue
 
+        kept = add_details(token, kept)
         city_dir = Path(args.out) / city
         download(kept, city_dir / "photos")
         with open(city_dir / "photos.csv", "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["id", "lat", "lon", "compass", "is_pano", "captured_at", "sequence"])
+            writer.writerow(["id", "lat", "lon", "compass", "is_pano", "captured_at", "sequence", "quality"])
             for im in kept:
-                writer.writerow([im["id"], im["lat"], im["lon"], im.get("compass_angle"),
-                                 bool(im.get("is_pano")), im.get("captured_at"), im.get("sequence")])
+                writer.writerow([im["id"], im["lat"], im["lon"], im.get("compass_angle"), bool(im.get("is_pano")),
+                                 im.get("captured_at"), im.get("sequence_id"), im.get("quality_score")])
+        print(f"{city}: saved {len(kept)} photos", flush=True)
 
 
 if __name__ == "__main__":
