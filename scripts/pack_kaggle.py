@@ -1,0 +1,42 @@
+"""Zip data/cities for upload as a Kaggle dataset (photos, csv and rendered maps only).
+
+python -m scripts.pack_kaggle --user <kaggle-username>
+kaggle datasets create -p data/kaggle        # first time
+kaggle datasets version -p data/kaggle -m "more cities"   # later
+"""
+import argparse
+import json
+import zipfile
+from pathlib import Path
+
+KEEP = {"map.png", "map.json", "photos.csv"}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user", required=True)
+    parser.add_argument("--src", default="data/cities")
+    parser.add_argument("--out", default="data/kaggle")
+    args = parser.parse_args()
+
+    src, out = Path(args.src), Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out / "cities.zip", "w", zipfile.ZIP_STORED) as zf:  # jpg/png are already compressed
+        for city in sorted(p for p in src.iterdir() if (p / "photos.csv").exists()):
+            files = [city / n for n in KEEP] + sorted((city / "photos").glob("*.jpg"))
+            for f in files:
+                zf.write(f, f.relative_to(src))
+            print(f"{city.name}: {len(files) - len(KEEP)} photos")
+
+    meta = {
+        "title": "AISeeYou cities",
+        "id": f"{args.user}/aiseeyou-cities",
+        "licenses": [{"name": "CC-BY-SA-4.0"}],
+        "subtitle": "Mapillary street photos (CC BY-SA 4.0) with OpenStreetMap rasters (ODbL)",
+    }
+    (out / "dataset-metadata.json").write_text(json.dumps(meta, indent=2))
+    print(f"wrote {out / 'cities.zip'} ({(out / 'cities.zip').stat().st_size / 1e9:.2f} GB)")
+
+
+if __name__ == "__main__":
+    main()
