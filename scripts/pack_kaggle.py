@@ -1,8 +1,11 @@
 """Zip data/cities for upload as a Kaggle dataset (photos, csv and rendered maps only).
 
 python -m scripts.pack_kaggle --user <kaggle-username>
-kaggle datasets create -p data/kaggle        # first time
-kaggle datasets version -p data/kaggle -m "more cities"   # later
+cd data/kaggle
+kaggle datasets create -p .                       # first time
+kaggle datasets version -p . -m "more cities"     # later
+
+Run kaggle from inside data/kaggle: on Windows the CLI breaks on paths like "data/kaggle".
 """
 import argparse
 import json
