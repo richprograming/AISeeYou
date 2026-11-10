@@ -1,0 +1,29 @@
+root: data/cities
+cities_config: configs/cities.yaml
+train_splits: [train]     # add "extra" for the sao_paulo ablation
+
+backbone: vit_small_patch14_dinov2.lvd142m
+photo_size: [224, 308]    # h, w
+tile_size: [224, 224]
+tile_m: 100
+jitter_m: 15
+use_panos: true           # panoramas become random perspective-like views
+
+batch_size: 64
+group: 4                  # photos per neighborhood group in a batch; 1 = random batches
+near_m: 400
+radius_m: 50              # closer pairs are the same place: masked in the loss, correct in eval
+
+epochs: 10
+lr: 3.0e-5
+weight_decay: 0.05
+warmup_steps: 200
+num_workers: 4
+log_every: 50
+
+eval:
+  photo_type: perspective
+  max_queries: 500
+  seed: 0
+  stride_m: 25
+  batch_size: 128
