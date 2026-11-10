@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from src.data import crop, grid, load_city
+from src.data import NearbyBatches, crop, grid, load_city, pano_view
 from src.metrics import retrieval_metrics, topk
 
 
@@ -18,6 +18,34 @@ def test_crop_is_north_up():
     raster[10, 50] = 255  # 40 m north of the center at 1 m/px
     tile = np.asarray(crop(raster, 0, 40, 10, 1.0, 100))
     assert tile.shape == (10, 10, 3) and tile[5, 5, 0] == 255
+
+
+def test_pano_view_shape():
+    view = pano_view(Image.new("RGB", (1024, 512)), aspect=1.5)
+    assert view.size == (384, 256)
+
+
+class FakeCity:
+    def __init__(self, xy):
+        self.xy = np.asarray(xy, dtype=float)
+        self.photos = list(range(len(xy)))
+
+
+def test_nearby_batches_use_every_photo_once():
+    rng = np.random.default_rng(0)
+    cities = [FakeCity(rng.uniform(-900, 900, (101, 2))), FakeCity(rng.uniform(-900, 900, (60, 2)))]
+    sampler = NearbyBatches(cities, batch_size=16, group=4, near_m=400, min_m=50)
+    batches = list(sampler)
+    flat = [i for b in batches for i in b]
+    assert len(batches) == len(sampler) == 161 // 16
+    assert len(flat) == len(set(flat))
+
+
+def test_nearby_batches_groups_are_close():
+    xy = [[0, 0], [100, 0], [200, 0], [5000, 0], [5100, 0], [5200, 0]]
+    sampler = NearbyBatches([FakeCity(xy)], batch_size=3, group=3, near_m=400, min_m=50)
+    for batch in sampler:
+        assert len({i // 3 for i in batch}) == 1  # all from the same cluster
 
 
 def thumbnail(img):
