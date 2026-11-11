@@ -20,9 +20,17 @@ def test_crop_is_north_up():
     assert tile.shape == (10, 10, 3) and tile[5, 5, 0] == 255
 
 
-def test_pano_view_shape():
-    view = pano_view(Image.new("RGB", (1024, 512)), aspect=1.5)
-    assert view.size == (384, 256)
+def test_pano_view_shape_and_direction():
+    pano = np.zeros((512, 1024, 3), dtype=np.uint8)
+    pano[:, 512] = 255  # the panorama center column (heading offset 0)
+    for _ in range(20):
+        view, offset = pano_view(Image.fromarray(pano), aspect=1.5)
+        assert view.size == (384, 256)
+        cols = np.flatnonzero(np.asarray(view)[0, :, 0] == 255)
+        if len(cols):
+            # the center column sits at -offset degrees from the view center
+            expected = 192 - offset / 360 * 1024
+            assert abs(cols[0] - expected) <= 1
 
 
 class FakeCity:
@@ -46,6 +54,15 @@ def test_nearby_batches_groups_are_close():
     sampler = NearbyBatches([FakeCity(xy)], batch_size=3, group=3, near_m=400, min_m=50)
     for batch in sampler:
         assert len({i // 3 for i in batch}) == 1  # all from the same cluster
+
+
+def test_crop_rotates_heading_to_top():
+    raster = np.zeros((200, 200, 3), dtype=np.uint8)
+    raster[100, 130] = 255  # 30 m east of the center at 1 m/px
+    tile = np.asarray(crop(raster, 0, 0, 100, 1.0, 200, heading=90))
+    assert tile.shape == (100, 100, 3)
+    row, col = np.argwhere(tile[..., 0] == 255)[0]
+    assert abs(row - 20) <= 1 and abs(col - 50) <= 1  # now 30 px above the center
 
 
 def thumbnail(img):

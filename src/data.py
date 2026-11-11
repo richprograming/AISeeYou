@@ -17,10 +17,18 @@ class City:
     name: str
     photos: list         # photo paths
     xy: np.ndarray       # (N, 2) photo positions in meters, origin at the map center
+    heading: np.ndarray  # (N,) camera heading, degrees clockwise from north (nan if unknown)
     is_pano: np.ndarray  # (N,) bool
     raster: np.ndarray   # (H, W, 3) rendered OSM map
     size_m: float
     m_per_px: float
+
+
+def to_float(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def load_city(root, name):
@@ -35,6 +43,7 @@ def load_city(root, name):
         name=name,
         photos=[d / "photos" / f"{r['id']}.jpg" for r in rows],
         xy=to_xy(lat, lon, meta["lat"], meta["lon"]).reshape(-1, 2),
+        heading=np.array([to_float(r["compass"]) for r in rows]),
         is_pano=np.array([r["is_pano"] == "True" for r in rows], dtype=bool),
         raster=raster,
         size_m=meta["size_m"],
@@ -43,9 +52,9 @@ def load_city(root, name):
 
 
 def select(city, idx):
-    idx = np.asarray(idx)
-    return City(city.name, [city.photos[i] for i in idx], city.xy[idx], city.is_pano[idx],
-                city.raster, city.size_m, city.m_per_px)
+    idx = np.asarray(idx, dtype=int)
+    return City(city.name, [city.photos[i] for i in idx], city.xy[idx], city.heading[idx],
+                city.is_pano[idx], city.raster, city.size_m, city.m_per_px)
 
 
 def grid(size_m, tile_m, stride_m):
@@ -56,15 +65,25 @@ def grid(size_m, tile_m, stride_m):
     return np.stack([xs.ravel(), ys.ravel()], axis=1)
 
 
-def crop(raster, x, y, tile_m, m_per_px, size_m):
-    """Square map tile of side tile_m centered at (x, y) meters, north up."""
-    half = tile_m / 2 / m_per_px
+def crop(raster, x, y, tile_m, m_per_px, size_m, heading=0.0):
+    """Square map tile of side tile_m centered at (x, y) meters, rotated so that
+    `heading` (degrees clockwise from north) points up. heading=0 gives north up."""
+    side = tile_m * 1.5 if heading else tile_m  # margin so rotated corners stay filled
+    half = side / 2 / m_per_px
     col = (x + size_m / 2) / m_per_px
     row = (size_m / 2 - y) / m_per_px
     left, top, right, bottom = (round(v) for v in (col - half, row - half, col + half, row + half))
     if left >= 0 and top >= 0 and right <= raster.shape[1] and bottom <= raster.shape[0]:
-        return Image.fromarray(raster[top:bottom, left:right])
-    return Image.fromarray(raster).crop((left, top, right, bottom))  # pads outside the map
+        tile = Image.fromarray(raster[top:bottom, left:right])
+    else:
+        tile = Image.fromarray(raster).crop((left, top, right, bottom))  # pads outside the map
+    if not heading:
+        return tile
+    # PIL rotates counterclockwise, which brings a feature at `heading` clockwise to the top
+    tile = tile.rotate(heading, resample=Image.NEAREST)
+    keep = round(tile_m / m_per_px)
+    off = (tile.width - keep) // 2
+    return tile.crop((off, off, off + keep, off + keep))
 
 
 class Photos(Dataset):
@@ -80,25 +99,33 @@ class Photos(Dataset):
 
 
 def pano_view(img, aspect):
-    """Perspective-like view from an equirectangular panorama: middle band, random heading."""
+    """Perspective-like view from an equirectangular panorama: middle band, random direction.
+    Also returns the view direction relative to the panorama center, in degrees."""
     arr = np.asarray(img)
     h, w = arr.shape[:2]
     band = arr[h // 4: 3 * h // 4]
-    band = np.roll(band, -random.randrange(w), axis=1)
-    return Image.fromarray(band[:, :int(band.shape[0] * aspect)])
+    width = int(band.shape[0] * aspect)
+    shift = random.randrange(w)
+    view = np.roll(band, -shift, axis=1)[:, :width]
+    offset = ((shift + width / 2) / w - 0.5) * 360
+    return Image.fromarray(view), offset
 
 
 class Pairs(Dataset):
-    """Training pairs: a photo and the north-up map tile around where it was taken.
+    """Training pairs: a photo and the map tile around where it was taken.
+    With align=True the tile is rotated so the camera direction points up; otherwise north up.
     The tile center is shifted by up to jitter_m so the model does not rely on exact centering."""
 
-    def __init__(self, cities, tile_m, photo_transform, tile_transform, jitter_m=0, aspect=1.375):
+    def __init__(self, cities, tile_m, photo_transform, tile_transform, jitter_m=0, align=False,
+                 jitter_deg=10, aspect=1.375):
         self.cities = cities
         self.items = [(c, i) for c, city in enumerate(cities) for i in range(len(city.photos))]
         self.tile_m = tile_m
         self.photo_transform = photo_transform
         self.tile_transform = tile_transform
         self.jitter_m = jitter_m
+        self.align = align
+        self.jitter_deg = jitter_deg
         self.aspect = aspect
 
     def __len__(self):
@@ -108,12 +135,15 @@ class Pairs(Dataset):
         c, i = self.items[k]
         city = self.cities[c]
         photo = Image.open(city.photos[i]).convert("RGB")
+        heading = city.heading[i]
         if city.is_pano[i]:
-            photo = pano_view(photo, self.aspect)
+            photo, offset = pano_view(photo, self.aspect)
+            heading += offset
 
+        heading = (heading + random.uniform(-self.jitter_deg, self.jitter_deg)) % 360 if self.align else 0.0
         limit = city.size_m / 2 - self.tile_m / 2
         x, y = (np.clip(v + random.uniform(-self.jitter_m, self.jitter_m), -limit, limit) for v in city.xy[i])
-        tile = crop(city.raster, x, y, self.tile_m, city.m_per_px, city.size_m)
+        tile = crop(city.raster, x, y, self.tile_m, city.m_per_px, city.size_m, heading)
         xy = torch.tensor(city.xy[i], dtype=torch.float32)
         return self.photo_transform(photo), self.tile_transform(tile), xy, c
 
@@ -156,16 +186,21 @@ class NearbyBatches(Sampler):
 
 
 class Tiles(Dataset):
-    def __init__(self, city, centers, tile_m, transform):
+    """Gallery tiles: every center, at each of `rotations` evenly spaced headings
+    (item i is center i // rotations at heading (i % rotations) * 360 / rotations)."""
+
+    def __init__(self, city, centers, tile_m, transform, rotations=1):
         self.city = city
         self.centers = centers
         self.tile_m = tile_m
         self.transform = transform
+        self.rotations = rotations
 
     def __len__(self):
-        return len(self.centers)
+        return len(self.centers) * self.rotations
 
     def __getitem__(self, i):
-        x, y = self.centers[i]
+        x, y = self.centers[i // self.rotations]
+        heading = (i % self.rotations) * 360 / self.rotations
         c = self.city
-        return self.transform(crop(c.raster, x, y, self.tile_m, c.m_per_px, c.size_m))
+        return self.transform(crop(c.raster, x, y, self.tile_m, c.m_per_px, c.size_m, heading))
