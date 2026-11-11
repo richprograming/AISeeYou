@@ -61,8 +61,10 @@ def crop(raster, x, y, tile_m, m_per_px, size_m):
     half = tile_m / 2 / m_per_px
     col = (x + size_m / 2) / m_per_px
     row = (size_m / 2 - y) / m_per_px
-    box = tuple(round(v) for v in (col - half, row - half, col + half, row + half))
-    return Image.fromarray(raster).crop(box)
+    left, top, right, bottom = (round(v) for v in (col - half, row - half, col + half, row + half))
+    if left >= 0 and top >= 0 and right <= raster.shape[1] and bottom <= raster.shape[0]:
+        return Image.fromarray(raster[top:bottom, left:right])
+    return Image.fromarray(raster).crop((left, top, right, bottom))  # pads outside the map
 
 
 class Photos(Dataset):
