@@ -3,11 +3,14 @@ cities_config: configs/cities.yaml
 train_splits: [train]     # add "extra" for the sao_paulo ablation
 
 backbone: vit_small_patch14_dinov2.lvd142m
+freeze_blocks: 0          # freeze the first N of 12 blocks in both encoders
 photo_size: [224, 308]    # h, w
 tile_size: [224, 224]
 tile_m: 100
 jitter_m: 15
+align: true               # rotate training tiles so the camera heading points up
 use_panos: true           # panoramas become random perspective-like views
+holdout_x_m: 450          # photos east of this (in each training city) are never trained on
 
 batch_size: 64
 group: 4                  # photos per neighborhood group in a batch; 1 = random batches
@@ -26,4 +29,5 @@ eval:
   max_queries: 500
   seed: 0
   stride_m: 25
-  batch_size: 128
+  rotations: 8            # heading of the query is unknown: try 8 tile rotations
+  batch_size: 256
