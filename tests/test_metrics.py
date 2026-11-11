@@ -11,6 +11,13 @@ def test_topk_order():
     assert topk(query, gallery, k=3)[0].tolist() == [2, 1, 0]
 
 
+def test_topk_scores_location_by_best_rotation():
+    query = torch.tensor([[1.0, 0.0]])
+    # 2 locations x 2 rotations: location 1 matches only at its second rotation
+    gallery = torch.tensor([[0.6, 0.8], [0.6, 0.8], [0.0, 1.0], [1.0, 0.0]])
+    assert topk(query, gallery, k=2, rotations=2)[0].tolist() == [1, 0]
+
+
 def test_perfect_and_wrong_retrieval():
     gallery_xy = np.array([[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]])
     query_xy = np.array([[10.0, 0.0], [190.0, 0.0]])

@@ -7,6 +7,7 @@ seed: 0
 tile_m: 100        # side of a map tile in meters
 stride_m: 25       # spacing between gallery tile centers
 radius_m: 50       # a retrieved tile counts as correct within this distance
+rotations: 8       # query heading is unknown: each location scores as its best of 8 rotations
 
 backbone: vit_small_patch14_dinov2.lvd142m
 photo_size: [224, 308]  # h, w (multiples of 14 for DINOv2)

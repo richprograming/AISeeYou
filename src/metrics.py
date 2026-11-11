@@ -3,12 +3,15 @@ import torch
 
 
 @torch.no_grad()
-def topk(query, gallery, k=10, chunk=1024):
-    """Indices of the k most similar gallery items per query. Embeddings must be L2-normalized."""
+def topk(query, gallery, k=10, rotations=1, chunk=1024):
+    """Indices of the k best gallery locations per query. Embeddings must be L2-normalized.
+    With rotations > 1 the gallery holds each location `rotations` times in a row
+    (one per heading), and a location scores as its best heading."""
     out = []
     for start in range(0, len(query), chunk):
         sim = query[start:start + chunk] @ gallery.T
-        out.append(sim.topk(min(k, len(gallery)), dim=1).indices)
+        sim = sim.view(len(sim), -1, rotations).amax(dim=2)
+        out.append(sim.topk(min(k, sim.shape[1]), dim=1).indices)
     return torch.cat(out).numpy()
 
 
