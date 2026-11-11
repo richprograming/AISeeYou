@@ -17,6 +17,14 @@ class Encoder(nn.Module):
     def forward(self, x):
         return F.normalize(self.backbone(x), dim=-1)
 
+    def freeze(self, n_blocks):
+        """Freeze the patch embedding and the first n_blocks transformer blocks (ViT only)."""
+        frozen = [self.backbone.patch_embed, *self.backbone.blocks[:n_blocks]]
+        for p in [self.backbone.cls_token, self.backbone.pos_embed]:
+            p.requires_grad = False
+        for module in frozen:
+            module.requires_grad_(False)
+
     def transform(self, size):
         return transforms.Compose([
             transforms.Resize(tuple(size)),
@@ -29,7 +37,8 @@ class Encoder(nn.Module):
 def embed(model, loader, device, log_every=20):
     out = []
     for i, x in enumerate(loader):
-        out.append(model(x.to(device)).cpu())
+        with torch.autocast(device, dtype=torch.float16, enabled=device == "cuda"):
+            out.append(model(x.to(device)).float().cpu())
         if log_every and (i + 1) % log_every == 0:
             print(f"  {i + 1}/{len(loader)} batches")
     return torch.cat(out)
