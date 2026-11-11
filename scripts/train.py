@@ -1,6 +1,6 @@
 """Fine-tune a photo encoder and a map encoder with InfoNCE.
 
-python -m scripts.train --config configs/train.yaml [--name run1] [--max-steps 5]
+python -m scripts.train --config configs/train.yaml [--name run1] [--set freeze_blocks=8 epochs=6]
 
 Writes outputs/<name>/{config.yaml, log.jsonl, best.pt}. Best = highest val R@10.
 
@@ -55,11 +55,15 @@ def main():
     parser.add_argument("--name", default="run")
     parser.add_argument("--root")
     parser.add_argument("--max-steps", type=int, help="stop early, for smoke tests")
+    parser.add_argument("--set", nargs="*", default=[], help="config overrides, e.g. freeze_blocks=8 epochs=6")
     args = parser.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
     if args.root:
         cfg["root"] = args.root
+    for item in args.set:
+        key, value = item.split("=", 1)
+        cfg[key] = yaml.safe_load(value)
     ev = cfg | cfg["eval"]
     splits = yaml.safe_load(open(cfg["cities_config"]))["splits"]
     train_names = [n for s in cfg["train_splits"] for n in splits[s]]
