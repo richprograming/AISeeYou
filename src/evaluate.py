@@ -27,18 +27,26 @@ def embed_gallery(map_model, city, cfg, device):
     return centers, embed(map_model, loader(tiles, cfg), device, log_every=0)
 
 
-def evaluate_queries(photo_model, queries, centers, gallery, cfg, device):
-    """Heading of the query photos is never used: a location scores as its best rotation."""
+def embed_queries(photo_model, queries, cfg, device):
     photos = Photos(queries.photos, photo_model.transform(cfg["photo_size"]))
-    query = embed(photo_model, loader(photos, cfg), device, log_every=0)
-    top = topk(query, gallery, rotations=cfg.get("rotations", 1))
-    metrics = retrieval_metrics(top, queries.xy, centers, cfg["radius_m"])
-    metrics.update(queries=len(queries.photos), gallery=len(centers))
+    return embed(photo_model, loader(photos, cfg), device, log_every=0)
+
+
+def score(query, query_xy, centers, gallery, cfg):
+    """Heading of the query photos is never used: a location scores as its best rotation."""
+    rotations = cfg.get("rotations", 1)
+    top = topk(query, gallery, rotations=rotations)
+    metrics = retrieval_metrics(top, query_xy, centers, cfg["radius_m"])
+    metrics.update(queries=len(query), gallery=len(centers))
     if cfg.get("search_m"):
-        mask = search_mask(queries.xy, centers, cfg["search_m"], cfg["seed"])
-        top = topk(query, gallery, rotations=cfg.get("rotations", 1), mask=torch.from_numpy(mask))
-        metrics["local"] = retrieval_metrics(top, queries.xy, centers, cfg["radius_m"], mask=mask)
+        mask = search_mask(query_xy, centers, cfg["search_m"], cfg["seed"])
+        top = topk(query, gallery, rotations=rotations, mask=torch.from_numpy(mask))
+        metrics["local"] = retrieval_metrics(top, query_xy, centers, cfg["radius_m"], mask=mask)
     return metrics
+
+
+def evaluate_queries(photo_model, queries, centers, gallery, cfg, device):
+    return score(embed_queries(photo_model, queries, cfg, device), queries.xy, centers, gallery, cfg)
 
 
 def evaluate_city(photo_model, map_model, city, cfg, device):
