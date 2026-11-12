@@ -1,6 +1,6 @@
 root: data/cities
 cities_config: configs/cities.yaml
-train_splits: [train]     # add "extra" for the sao_paulo ablation
+train_splits: [train, latam]     # add "extra" for the sao_paulo ablation
 
 backbone: vit_small_patch14_dinov2.lvd142m
 freeze_blocks: 0          # freeze the first N of 12 blocks in both encoders
@@ -30,4 +30,5 @@ eval:
   seed: 0
   stride_m: 25
   rotations: 8            # heading of the query is unknown: try 8 tile rotations
+  search_m: 500           # local search too: within 500 m of the place the caption names
   batch_size: 256

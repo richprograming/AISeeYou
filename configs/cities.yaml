@@ -12,11 +12,16 @@ cities:
   curitiba:       {lat: -25.4290, lon: -49.2710}
   porto_alegre:   {lat: -30.0277, lon: -51.2287}
   belo_horizonte: {lat: -19.9190, lon: -43.9386}
+  buenos_aires:   {lat: -34.6010, lon: -58.3830}
+  mexico_city:    {lat: 19.4150, lon: -99.1650}
+  santiago:       {lat: -33.4400, lon: -70.6300}
+  lima:           {lat: -12.1200, lon: -77.0300}
 
-# Train on US/Europe, test on Brazilian cities never seen in training.
+# Train on US/Europe plus Latin America outside Brazil, test on Brazilian cities never seen in training.
 # sao_paulo is held out for the ablation "does one Brazilian training city help?".
 splits:
   train: [san_francisco, seattle, amsterdam, berlin]
+  latam: [buenos_aires, mexico_city, santiago, lima]
   val: [curitiba]
   test: [porto_alegre, rio_de_janeiro, belo_horizonte]  # belo_horizonte: sparse OSM buildings
   extra: [sao_paulo]
