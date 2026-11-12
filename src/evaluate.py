@@ -1,8 +1,9 @@
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
 from src.data import Photos, Tiles, grid, select
-from src.metrics import retrieval_metrics, topk
+from src.metrics import retrieval_metrics, search_mask, topk
 from src.model import embed
 
 
@@ -33,6 +34,10 @@ def evaluate_queries(photo_model, queries, centers, gallery, cfg, device):
     top = topk(query, gallery, rotations=cfg.get("rotations", 1))
     metrics = retrieval_metrics(top, queries.xy, centers, cfg["radius_m"])
     metrics.update(queries=len(queries.photos), gallery=len(centers))
+    if cfg.get("search_m"):
+        mask = search_mask(queries.xy, centers, cfg["search_m"], cfg["seed"])
+        top = topk(query, gallery, rotations=cfg.get("rotations", 1), mask=torch.from_numpy(mask))
+        metrics["local"] = retrieval_metrics(top, queries.xy, centers, cfg["radius_m"], mask=mask)
     return metrics
 
 
